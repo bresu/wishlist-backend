@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app.auth import router as admin_router
 from app.database import connect, init_db
 
 
@@ -14,6 +15,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wishlist API", lifespan=lifespan)
+app.include_router(admin_router)
 
 
 class Claim(BaseModel):

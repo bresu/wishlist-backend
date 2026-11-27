@@ -27,6 +27,18 @@ def init_db():
                 name TEXT NOT NULL CHECK (length(trim(name)) > 0),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS admin_sessions (
+                token_hash TEXT PRIMARY KEY,
+                csrf_token TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                ip TEXT PRIMARY KEY,
+                failures INTEGER NOT NULL,
+                last_failure INTEGER NOT NULL
+            );
         """)
         db.commit()
     finally:
