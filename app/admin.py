@@ -31,7 +31,7 @@ def admin_page(request: Request):
     try:
         gifts = db.execute("""
             SELECT g.id, g.title, g.description, g.image,
-                   r.gift_id IS NOT NULL AS reserved
+                   r.name AS reserved_by, r.created_at AS reserved_at
             FROM gifts AS g
             LEFT JOIN reservations AS r ON r.gift_id = g.id
             ORDER BY g.id DESC
@@ -39,18 +39,37 @@ def admin_page(request: Request):
     finally:
         db.close()
 
+    csrf = escape(session["csrf_token"], quote=True)
     cards = "".join(f"""
         <article class="gift">
           {f'<img src="/images/{gift["image"]}" alt="" loading="lazy">' if gift['image'] else ''}
-          <div>
+          <div class="gift-content">
             <h3>{escape(gift['title'])}</h3>
             <div class="description">{render_description(gift['description'])}</div>
-            <small>{'Reserviert' if gift['reserved'] else 'Verfügbar'}</small>
+            {f'<p>Reserviert von <strong>{escape(gift["reserved_by"])}</strong> am {escape(gift["reserved_at"])}</p>' if gift['reserved_by'] else '<p>Verfügbar</p>'}
+            {f'''<form method="post" action="/admin/gifts/{gift['id']}/release">
+              <input type="hidden" name="csrf_token" value="{csrf}">
+              <button type="submit">Reservierung freigeben</button>
+            </form>''' if gift['reserved_by'] else ''}
+            <details>
+              <summary>Bearbeiten</summary>
+              <form class="gift-form" method="post" action="/admin/gifts/{gift['id']}/edit" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{csrf}">
+                <label>Titel <input name="title" maxlength="150" required value="{escape(gift['title'], quote=True)}"></label>
+                <label>Beschreibung (Markdown) <textarea name="description" maxlength="2000">{escape(gift['description'])}</textarea></label>
+                <label>Foto ersetzen (optional) <input type="file" name="image" accept="image/jpeg,image/png,image/webp"></label>
+                <img class="photo-preview" alt="Vorschau des neuen Fotos" hidden>
+                <button type="submit">Änderungen speichern</button>
+              </form>
+            </details>
+            <form method="post" action="/admin/gifts/{gift['id']}/delete" onsubmit="return confirm('Diesen Wunsch und seine Reservierung wirklich löschen?')">
+              <input type="hidden" name="csrf_token" value="{csrf}">
+              <button type="submit">Wunsch löschen</button>
+            </form>
           </div>
         </article>
     """ for gift in gifts) or "<p>Noch keine Wünsche eingetragen.</p>"
 
-    csrf = escape(session["csrf_token"], quote=True)
     return HTMLResponse(f"""<!doctype html>
 <html lang="de">
 <head>
@@ -69,6 +88,10 @@ def admin_page(request: Request):
     .gift {{ display: flex; align-items: center; gap: 1rem; padding: 1rem 0; border-top: 1px solid gray; }}
     .gift img {{ width: 100px; height: 100px; object-fit: cover; border-radius: .5rem; }}
     .gift h3 {{ margin: 0; }}
+    .gift-content {{ flex: 1; min-width: 0; }}
+    details {{ margin: .75rem 0; }}
+    summary {{ cursor: pointer; }}
+    @media (max-width: 520px) {{ .gift {{ align-items: flex-start; }} .gift > img {{ width: 76px; height: 76px; }} }}
     .description p {{ margin: .4rem 0; }}
     .description a {{ overflow-wrap: anywhere; }}
     .photo-preview {{ display: block; max-width: min(100%, 360px); max-height: 280px; object-fit: contain; border-radius: .5rem; margin-top: .5rem; }}
@@ -165,27 +188,34 @@ def admin_page(request: Request):
     }});
     window.addEventListener('blur', hideDropOverlay);
     photoInput.addEventListener('change', updatePreview);
+    for (const input of document.querySelectorAll('details input[type="file"]')) {{
+      let url = null;
+      const image = input.closest('label').nextElementSibling;
+      input.addEventListener('change', () => {{
+        if (url) URL.revokeObjectURL(url);
+        url = null;
+        image.hidden = true;
+        image.removeAttribute('src');
+        const file = input.files[0];
+        if (!file) return;
+        if (!/\\.(jpe?g|png|webp)$/i.test(file.name) || file.size > 10 * 1024 * 1024) {{
+          alert('Nur JPG, PNG oder WebP mit maximal 10 MB erlaubt.');
+          input.value = '';
+          return;
+        }}
+        url = URL.createObjectURL(file);
+        image.src = url;
+        image.hidden = false;
+      }});
+      window.addEventListener('pagehide', () => {{ if (url) URL.revokeObjectURL(url); }});
+    }}
     window.addEventListener('pagehide', () => {{ if (previewUrl) URL.revokeObjectURL(previewUrl); }});
   </script>
 </body>
 </html>""", headers={"Cache-Control": "no-store"})
 
 
-@router.post("/admin/gifts")
-def create_gift(
-    request: Request,
-    title: str = Form(max_length=150),
-    description: str = Form(default="", max_length=2000),
-    csrf_token: str = Form(),
-    image: UploadFile | None = File(default=None),
-):
-    session = require_admin(request)
-    require_csrf(session, csrf_token)
-
-    title = title.strip()
-    if not title:
-        raise HTTPException(422, "Titel darf nicht leer sein")
-
+def save_image(image: UploadFile | None) -> str | None:
     filename = None
     if image and image.filename:
         content = image.file.read(MAX_IMAGE_BYTES + 1)
@@ -206,6 +236,26 @@ def create_gift(
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
             raise HTTPException(422, "Ungültige Bilddatei") from exc
 
+    return filename
+
+
+@router.post("/admin/gifts")
+def create_gift(
+    request: Request,
+    title: str = Form(max_length=150),
+    description: str = Form(default="", max_length=2000),
+    csrf_token: str = Form(),
+    image: UploadFile | None = File(default=None),
+):
+    session = require_admin(request)
+    require_csrf(session, csrf_token)
+
+    title = title.strip()
+    if not title:
+        raise HTTPException(422, "Titel darf nicht leer sein")
+
+    filename = save_image(image)
+
     db = connect()
     try:
         db.execute(
@@ -220,6 +270,81 @@ def create_gift(
     finally:
         db.close()
 
+    return RedirectResponse("/admin", status_code=303)
+
+
+@router.post("/admin/gifts/{gift_id}/edit")
+def edit_gift(
+    gift_id: int,
+    request: Request,
+    title: str = Form(max_length=150),
+    description: str = Form(default="", max_length=2000),
+    csrf_token: str = Form(),
+    image: UploadFile | None = File(default=None),
+):
+    session = require_admin(request)
+    require_csrf(session, csrf_token)
+    title = title.strip()
+    if not title:
+        raise HTTPException(422, "Titel darf nicht leer sein")
+
+    db = connect()
+    filename = None
+    try:
+        gift = db.execute("SELECT image FROM gifts WHERE id = ?", (gift_id,)).fetchone()
+        if gift is None:
+            raise HTTPException(404, "Wunsch nicht gefunden")
+
+        filename = save_image(image)
+        db.execute(
+            "UPDATE gifts SET title = ?, description = ?, image = COALESCE(?, image) WHERE id = ?",
+            (title, description.strip(), filename, gift_id),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        if filename:
+            (upload_dir() / filename).unlink(missing_ok=True)
+        raise
+    finally:
+        db.close()
+
+    if filename and gift["image"]:
+        (upload_dir() / gift["image"]).unlink(missing_ok=True)
+    return RedirectResponse("/admin", status_code=303)
+
+
+@router.post("/admin/gifts/{gift_id}/delete")
+def delete_gift(gift_id: int, request: Request, csrf_token: str = Form()):
+    session = require_admin(request)
+    require_csrf(session, csrf_token)
+    db = connect()
+    try:
+        gift = db.execute("SELECT image FROM gifts WHERE id = ?", (gift_id,)).fetchone()
+        if gift is None:
+            raise HTTPException(404, "Wunsch nicht gefunden")
+        db.execute("DELETE FROM gifts WHERE id = ?", (gift_id,))
+        db.commit()
+    finally:
+        db.close()
+
+    if gift["image"]:
+        (upload_dir() / gift["image"]).unlink(missing_ok=True)
+    return RedirectResponse("/admin", status_code=303)
+
+
+@router.post("/admin/gifts/{gift_id}/release")
+def release_reservation(gift_id: int, request: Request, csrf_token: str = Form()):
+    session = require_admin(request)
+    require_csrf(session, csrf_token)
+    db = connect()
+    try:
+        result = db.execute("DELETE FROM reservations WHERE gift_id = ?", (gift_id,))
+        if result.rowcount == 0:
+            raise HTTPException(404, "Reservierung nicht gefunden")
+        db.commit()
+    finally:
+        db.close()
     return RedirectResponse("/admin", status_code=303)
 
 
