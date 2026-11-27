@@ -8,6 +8,7 @@ from app.auth import router as auth_router
 from app.admin import router as admin_router
 from app.database import connect, init_db
 from app.markdown import render_description
+from app.public import router as public_router
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Wishlist API", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(public_router)
 
 
 class Claim(BaseModel):
