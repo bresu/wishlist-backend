@@ -2,7 +2,6 @@ import hashlib
 import os
 import secrets
 import time
-from html import escape
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
@@ -122,21 +121,6 @@ def login(request: Request, password: str = Form(max_length=1024)):
     )
     response.headers["Cache-Control"] = "no-store"
     return response
-
-
-@router.get("", response_class=HTMLResponse)
-def admin_page(request: Request):
-    session = get_session(request)
-    if session is None:
-        return RedirectResponse("/admin/login", status_code=303)
-    csrf = escape(session["csrf_token"], quote=True)
-    return HTMLResponse(f"""<!doctype html>
-<html lang="de"><meta charset="utf-8"><title>Wishlist Admin</title>
-<h1>Wishlist Admin</h1><p>Du bist eingeloggt.</p>
-<form method="post" action="/admin/logout">
-<input type="hidden" name="csrf_token" value="{csrf}">
-<button type="submit">Ausloggen</button>
-</form></html>""", headers={"Cache-Control": "no-store"})
 
 
 @router.post("/logout")

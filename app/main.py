@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import router as admin_router
+from app.auth import router as auth_router
+from app.admin import router as admin_router
 from app.database import connect, init_db
+from app.markdown import render_description
 
 
 @asynccontextmanager
@@ -15,6 +17,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wishlist API", lifespan=lifespan)
+app.include_router(auth_router)
 app.include_router(admin_router)
 
 
@@ -38,7 +41,8 @@ def get_gifts():
             LEFT JOIN reservations AS r ON r.gift_id = g.id
             ORDER BY g.id DESC
         """)
-        return [dict(row) | {"reserved": bool(row["reserved"])} for row in rows]
+        return [dict(row) | {"reserved": bool(row["reserved"]),
+                             "description_html": render_description(row["description"])} for row in rows]
     finally:
         db.close()
 
